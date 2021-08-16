@@ -44,16 +44,18 @@ def _set_id3_mp3(converted_file_path: str, song_object: SongObject):
     # embed song details
     # ! we save tags as both ID3 v2.3 and v2.4
     # ! The simple ID3 tags
-    audio_file = EasyID3(converted_file_path)
+    # audio_file = EasyID3(converted_file_path)
+    audio_file = ID3(converted_file_path)
+    audio_file.delete()
 
-    audio_file = _embed_mp3_metadata(audio_file, song_object)
+    # audio_file = _embed_mp3_metadata(audio_file, song_object)
 
     # ! save as both ID3 v2.3 & v2.4 as v2.3 isn't fully features and
     # ! windows doesn't support v2.4 until later versions of Win10
-    audio_file.save(v2_version=3)
+    # audio_file.save(v2_version=3)
 
-    audio_file = _embed_mp3_cover(audio_file, song_object, converted_file_path)
-    audio_file = _embed_mp3_lyrics(audio_file, song_object)
+    # audio_file = _embed_mp3_cover(audio_file, song_object, converted_file_path)
+    # audio_file = _embed_mp3_lyrics(audio_file, song_object)
     # ! setting song links as comment (helpful for devs)
     audio_file.add(Comment(encoding=3, text=song_object.youtube_link))
 
