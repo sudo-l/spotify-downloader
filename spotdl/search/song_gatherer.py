@@ -8,13 +8,22 @@ from spotdl.providers import (
     yt_provider,
     ytm_provider,
     provider_utils,
+    lyrics_providers,
 )
 from spotdl.search import SongObject, SpotifyClient
-from spotdl.providers.provider_utils import _get_converted_file_path
+from spotdl.utils.song_name_utils import format_name
+from spotdl.providers.provider_utils import (
+    _get_converted_file_path,
+    _parse_path_template,
+)
 
 
 def from_spotify_url(
-    spotify_url: str, output_format: str = None, use_youtube: bool = False
+    spotify_url: str,
+    output_format: str = None,
+    use_youtube: bool = False,
+    lyrics_provider: str = None,
+    playlist: dict = None,
 ) -> SongObject:
     """
     Creates song object using spotfy url
@@ -30,7 +39,6 @@ def from_spotify_url(
         output_format = "mp3"
 
     # Get the Song Metadata
-    print(f"Gathering Spotify Metadata for: {spotify_url}")
     raw_track_meta, raw_artist_meta, raw_album_meta = metadata_provider.from_url(
         spotify_url
     )
@@ -64,7 +72,7 @@ def from_spotify_url(
         raise OSError(f"{converted_file_name} already downloaded")
 
     # Get the song's downloadable audio link
-    if use_youtube is True:
+    if use_youtube:
         print(f'Searching YouTube for "{display_name}"', end="\r")
         youtube_link = yt_provider.search_and_get_best_match(
             song_name, contributing_artists, duration, isrc
@@ -83,16 +91,23 @@ def from_spotify_url(
         print(" " * (len(display_name) + 25), end="\r")
         print(f'Found YouTube URL for "{display_name}" : {youtube_link}')
 
-    # (try to) Get lyrics from Genius
-    lyrics = provider_utils._get_song_lyrics(song_name, contributing_artists)
+    # (try to) Get lyrics from musixmatch/genius
+    # use musixmatch as the default provider
+    if lyrics_provider == "genius":
+        lyrics = lyrics_providers.get_lyrics_genius(song_name, contributing_artists)
+    else:
+        lyrics = lyrics_providers.get_lyrics_musixmatch(song_name, contributing_artists)
 
     return SongObject(
-        raw_track_meta, raw_album_meta, raw_artist_meta, youtube_link, lyrics
+        raw_track_meta, raw_album_meta, raw_artist_meta, youtube_link, lyrics, playlist
     )
 
 
 def from_search_term(
-    query: str, output_format: str = None, use_youtube: bool = False
+    query: str,
+    output_format: str = None,
+    use_youtube: bool = False,
+    lyrics_provider: str = None,
 ) -> List[SongObject]:
     """
     Queries Spotify for a song and returns the best match
@@ -112,21 +127,24 @@ def from_search_term(
     # return first result link or if no matches are found, raise Exception
     if result is None or len(result.get("tracks", {}).get("items", [])) == 0:
         raise Exception("No song matches found on Spotify")
-    else:
-        song_url = "http://open.spotify.com/track/" + result["tracks"]["items"][0]["id"]
-        try:
-            song = from_spotify_url(song_url, output_format, use_youtube)
-            return [song] if song.youtube_link is not None else []
-        except (LookupError, OSError, ValueError):
-            return []
+    song_url = "http://open.spotify.com/track/" + result["tracks"]["items"][0]["id"]
+    try:
+        song = from_spotify_url(
+            song_url, output_format, use_youtube, lyrics_provider, None
+        )
+        return [song] if song.youtube_link is not None else []
+    except (LookupError, OSError, ValueError):
+        return []
 
 
 def from_album(
     album_url: str,
     output_format: str = None,
     use_youtube: bool = False,
+    lyrics_provider: str = None,
     generate_m3u: bool = False,
     threads: int = 1,
+    path_template: str = None,
 ) -> List[SongObject]:
     """
     Create and return list containing SongObject for every song in the album
@@ -169,10 +187,12 @@ def from_album(
                 "https://open.spotify.com/track/" + track["id"],
                 output_format,
                 use_youtube,
+                lyrics_provider,
+                None,
             )
 
             if generate_m3u:
-                file_path = _get_converted_file_path(song, output_format)
+                file_path = _parse_path_template(path_template, song, output_format)
 
                 return song, f"{file_path}\n"
 
@@ -181,31 +201,8 @@ def from_album(
             return None, None
         except OSError:
             if generate_m3u:
-                file_path = (
-                    str(
-                        provider_utils._create_song_title(
-                            track["name"],
-                            [artist["name"] for artist in track["artists"]],
-                        )
-                    )
-                    + "."
-                    + output_format
-                    if output_format is not None
-                    else "mp3"
-                )
-
-                if len(file_path) > 256:
-                    file_path = (
-                        str(
-                            provider_utils._create_song_title(
-                                track["name"], [track["artists"][0]["name"]]
-                            )
-                        )
-                        + "."
-                        + output_format
-                        if output_format is not None
-                        else "mp3"
-                    )
+                song_obj = SongObject({*track}, album_response, {}, None, "", None)
+                file_path = _parse_path_template(path_template, song_obj, output_format)
 
                 return None, f"{file_path}\n"
 
@@ -217,7 +214,7 @@ def from_album(
     album_text = ""
     for result in results:
         if result[1] is not None:
-            album_text += "".join(char for char in result[1] if char not in "/?\\*|<>")
+            album_text += result[1]
 
         if result[0] is not None and result[0].youtube_link is not None:
             tracks.append(result[0])
@@ -230,7 +227,7 @@ def from_album(
         else:
             album_name = album_tracks[0]["name"]
 
-        album_name = "".join(char for char in album_name if char not in "/?\\*|<>")
+        album_name = format_name(album_name)
 
         album_file = Path(f"{album_name}.m3u")
 
@@ -244,8 +241,10 @@ def from_playlist(
     playlist_url: str,
     output_format: str = None,
     use_youtube: bool = False,
+    lyrics_provider: str = None,
     generate_m3u: bool = False,
     threads: int = 1,
+    path_template: str = None,
 ) -> List[SongObject]:
     """
     Create and return list containing SongObject for every song in the playlist
@@ -260,6 +259,7 @@ def from_playlist(
     tracks = []
 
     playlist_response = spotify_client.playlist_tracks(playlist_url)
+    playlist = spotify_client.playlist(playlist_url)
     if playlist_response is None:
         raise ValueError("Wrong playlist id")
 
@@ -297,10 +297,12 @@ def from_playlist(
                 "https://open.spotify.com/track/" + track["track"]["id"],
                 output_format,
                 use_youtube,
+                lyrics_provider,
+                playlist,
             )
 
             if generate_m3u:
-                file_path = _get_converted_file_path(song, output_format)
+                file_path = _parse_path_template(path_template, song, output_format)
 
                 return song, f"{file_path}\n"
 
@@ -309,32 +311,10 @@ def from_playlist(
             return None, None
         except OSError:
             if generate_m3u:
-                file_path = (
-                    str(
-                        provider_utils._create_song_title(
-                            track["track"]["name"],
-                            [artist["name"] for artist in track["track"]["artists"]],
-                        )
-                    )
-                    + "."
-                    + output_format
-                    if output_format is not None
-                    else "mp3"
+                song_obj = SongObject(
+                    {*track["track"]}, {}, {}, None, "", playlist_response
                 )
-
-                if len(file_path) > 256:
-                    file_path = (
-                        str(
-                            provider_utils._create_song_title(
-                                track["track"]["name"],
-                                [track["track"]["artists"][0]["name"]],
-                            )
-                        )
-                        + "."
-                        + output_format
-                        if output_format is not None
-                        else "mp3"
-                    )
+                file_path = _parse_path_template(path_template, song_obj, output_format)
 
                 return None, f"{file_path}\n"
 
@@ -346,9 +326,7 @@ def from_playlist(
     playlist_text = ""
     for result in results:
         if result[1] is not None:
-            playlist_text += "".join(
-                char for char in result[1] if char not in "/?\\*|<>"
-            )
+            playlist_text += result[1]
 
         if result[0] is not None and result[0].youtube_link is not None:
             tracks.append(result[0])
@@ -361,9 +339,7 @@ def from_playlist(
         else:
             playlist_name = playlist_tracks[0]["track"]["name"]
 
-        playlist_name = "".join(
-            char for char in playlist_name if char not in "/?\\*|<>"
-        )
+        playlist_name = format_name(playlist_name)
 
         playlist_file = Path(f"{playlist_name}.m3u")
 
@@ -377,6 +353,7 @@ def from_artist(
     artist_url: str,
     output_format: str = None,
     use_youtube: bool = False,
+    lyrics_provider: str = None,
     threads: int = 1,
 ) -> List[SongObject]:
     """
@@ -399,7 +376,7 @@ def from_artist(
     albums_object: Dict[str, str] = {}
 
     # Fetch all artist albums
-    while artist_response["next"]:
+    while artist_response and artist_response["next"]:
         response = spotify_client.next(artist_response)
         if response is None:
             break
@@ -476,6 +453,8 @@ def from_artist(
                 f"https://open.spotify.com/track/{track_uri.split(':')[-1]}",
                 output_format,
                 use_youtube,
+                lyrics_provider,
+                None,
             )
         except (LookupError, ValueError, OSError):
             return None
@@ -491,7 +470,10 @@ def from_artist(
 
 
 def from_saved_tracks(
-    output_format: str = None, use_youtube: bool = False, threads: int = 1
+    output_format: str = None,
+    use_youtube: bool = False,
+    lyrics_provider: str = None,
+    threads: int = 1,
 ) -> List[SongObject]:
     """
     Create and return list containing SongObject for every song that user has saved
@@ -511,7 +493,7 @@ def from_saved_tracks(
     tracks = []
 
     # Fetch all saved tracks
-    while saved_tracks_response["next"]:
+    while saved_tracks_response and saved_tracks_response["next"]:
         response = spotify_client.next(saved_tracks_response)
         # response is wrong, break
         if response is None:
@@ -535,6 +517,8 @@ def from_saved_tracks(
                 "https://open.spotify.com/track/" + track["track"]["id"],
                 output_format,
                 use_youtube,
+                lyrics_provider,
+                None,
             )
         except (LookupError, ValueError, OSError):
             return None
@@ -565,5 +549,5 @@ def from_dump(data_dump: dict) -> SongObject:
     lyrics = data_dump["lyrics"]
 
     return SongObject(
-        raw_track_meta, raw_album_meta, raw_artist_meta, youtube_link, lyrics
+        raw_track_meta, raw_album_meta, raw_artist_meta, youtube_link, lyrics, None
     )

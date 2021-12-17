@@ -5,13 +5,16 @@ import traceback
 import concurrent.futures
 
 from pathlib import Path
-from youtube_dl import YoutubeDL
+from yt_dlp import YoutubeDL
 from typing import List, Optional
 
 from spotdl.search import SongObject
 from spotdl.download.progress_ui_handler import YTDLLogger
 from spotdl.download import ffmpeg, set_id3_data, DisplayManager, DownloadTracker
-from spotdl.providers.provider_utils import _get_converted_file_path
+from spotdl.providers.provider_utils import (
+    _get_converted_file_path,
+    _parse_path_template,
+)
 
 
 class DownloadManager:
@@ -26,6 +29,7 @@ class DownloadManager:
         arguments.setdefault("ffmpeg", "ffmpeg")
         arguments.setdefault("output_format", "mp3")
         arguments.setdefault("download_threads", 4)
+        arguments.setdefault("path_template", None)
 
         if sys.platform == "win32":
             # ! ProactorEventLoop is required on Windows to run subprocess asynchronously
@@ -148,9 +152,16 @@ class DownloadManager:
             if not temp_folder.exists():
                 temp_folder.mkdir()
 
-            converted_file_path = _get_converted_file_path(
-                song_object, self.arguments["output_format"]
-            )
+            if self.arguments["path_template"] is not None:
+                converted_file_path = _parse_path_template(
+                    self.arguments["path_template"],
+                    song_object,
+                    self.arguments["output_format"],
+                )
+            else:
+                converted_file_path = _get_converted_file_path(
+                    song_object, self.arguments["output_format"]
+                )
 
             # if a song is already downloaded skip it
             if converted_file_path.is_file():
@@ -163,10 +174,12 @@ class DownloadManager:
                 # ! it here as a continent way to avoid executing the rest of the function.
                 return None
 
+            converted_file_path.parent.mkdir(parents=True, exist_ok=True)
+
             if self.arguments["output_format"] == "m4a":
-                ytdl_format = "bestaudio[ext=m4a]"
+                ytdl_format = "bestaudio[ext=m4a]/bestaudio/best"
             elif self.arguments["output_format"] == "opus":
-                ytdl_format = "bestaudio[ext=webm]"
+                ytdl_format = "bestaudio[ext=webm]/bestaudio/best"
             else:
                 ytdl_format = "bestaudio"
 
@@ -174,7 +187,7 @@ class DownloadManager:
             audio_handler = YoutubeDL(
                 {
                     "format": ytdl_format,
-                    "outtmpl": f"{str(temp_folder)}/%(id)s.%(ext)s",
+                    "outtmpl": f"{temp_folder}/%(id)s.%(ext)s",
                     "quiet": True,
                     "no_warnings": True,
                     "logger": YTDLLogger(),
@@ -186,7 +199,7 @@ class DownloadManager:
 
             try:
                 downloaded_file_path_string = await self._perform_audio_download_async(
-                    converted_file_path.name.split(".")[0],
+                    converted_file_path.name.rsplit(".", 1)[0],
                     temp_folder,
                     audio_handler,
                     song_object.youtube_link,
@@ -207,16 +220,19 @@ class DownloadManager:
 
             downloaded_file_path = Path(downloaded_file_path_string)
 
-            if self.arguments["output_format"] != "m4a":
+            if (
+                downloaded_file_path.suffix == ".m4a"
+                and self.arguments["output_format"] == "m4a"
+            ):
+                downloaded_file_path.rename(converted_file_path)
+                ffmpeg_success = True
+            else:
                 ffmpeg_success = await ffmpeg.convert(
                     downloaded_file_path=downloaded_file_path,
                     converted_file_path=converted_file_path,
                     output_format=self.arguments["output_format"],
                     ffmpeg_path=self.arguments["ffmpeg"],
                 )
-            else:
-                downloaded_file_path.rename(converted_file_path)
-                ffmpeg_success = True
 
             if display_progress_tracker:
                 display_progress_tracker.notify_conversion_completion()
@@ -270,14 +286,11 @@ class DownloadManager:
         # ! The actual download, if there is any error, it'll be here,
         try:
             data = audio_handler.extract_info(youtube_link)
-            downloaded_file_path = Path(temp_folder / f"{data['id']}.{data['ext']}")
-
-            return downloaded_file_path
-        except Exception as e:  # noqa:E722
             # ! This is equivalent to a failed download, we do nothing, the song remains on
             # ! download_trackers download queue and all is well...
+            return Path(temp_folder / f"{data['id']}.{data['ext']}")
+        except Exception as e:
             temp_files = Path(temp_folder).glob(f"{converted_file_name}.*")
             for temp_file in temp_files:
                 temp_file.unlink()
-
             raise e

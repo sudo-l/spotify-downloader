@@ -56,7 +56,7 @@ def search_and_get_best_match(
             if (
                 isrc_result is not None
                 and "link" in isrc_result
-                and name_match is True
+                and name_match
                 and time_match > 90
             ):
                 return isrc_result["link"]
@@ -97,7 +97,7 @@ def search_and_get_best_match(
     results = {**songs, **videos}
 
     # No matches found
-    if len(results) == 0:
+    if not results:
         return None
 
     result_items = list(results.items())
@@ -142,12 +142,11 @@ def _order_ytm_results(
 
         sentence_words = lower_song_name.replace("-", " ").split(" ")
 
-        common_word = False
-
-        # ! check for common word
-        for word in sentence_words:
-            if word != "" and word in lower_result_name:
-                common_word = True
+        common_word = any(
+            # ! check for common word
+            word != "" and word in lower_result_name
+            for word in sentence_words
+        )
 
         # ! if there are no common words, skip result
         if not common_word:
@@ -155,44 +154,37 @@ def _order_ytm_results(
 
         # Find artist match
         # ! match  = (no of artist names in result) / (no. of artist names on spotify) * 100
-        artist_match_number = 0
+        artist_match_number = 0.0
 
         # ! we use fuzzy matching because YouTube spellings might be mucked up
         if result["type"] == "song":
             for artist in song_artists:
-                if _match_percentage(
-                    unidecode(artist.lower()), unidecode(result["artist"]).lower(), 85
-                ):
-                    artist_match_number += 1
+                artist_match_number += _match_percentage(
+                    str(unidecode(artist.lower())), unidecode(result["artist"].lower())
+                )
         else:
             # ! i.e if video
             for artist in song_artists:
                 # ! something like _match_percentage('rionos', 'aiobahn, rionos Motivation
                 # ! (remix)' would return 100, so we're absolutely corrent in matching
                 # ! artists to song name.
-                if _match_percentage(
-                    unidecode(artist.lower()), unidecode(result["name"]).lower(), 85
-                ):
-                    artist_match_number += 1
+                artist_match_number += _match_percentage(
+                    str(unidecode(artist.lower())), unidecode(result["name"].lower())
+                )
 
             # we didn't find artist in the video title, so we fallback to
             # detecting song artist in the channel name
             # I am not sure if this won't create false positives
             if artist_match_number == 0:
                 for artist in song_artists:
-                    if _match_percentage(
-                        unidecode(artist.lower()),
+                    artist_match_number += _match_percentage(
+                        str(unidecode(artist.lower())),
                         unidecode(result["artist"].lower()),
-                        85,
-                    ):
-                        artist_match_number += 1
+                    )
 
-        # ! Skip if there are no artists in common, (else, results like 'Griffith Swank -
-        # ! Madness' will be the top match for 'Ruelle - Madness')
-        if artist_match_number == 0:
+        artist_match = artist_match_number / len(song_artists)
+        if artist_match < 70:
             continue
-
-        artist_match = (artist_match_number / len(song_artists)) * 100
 
         song_title = _create_song_title(song_name, song_artists).lower()
 
@@ -200,12 +192,16 @@ def _order_ytm_results(
         # this needs more testing
         if result["type"] == "song":
             name_match = round(
-                _match_percentage(unidecode(result["name"]), unidecode(song_name), 60),
+                _match_percentage(
+                    unidecode(result["name"]), str(unidecode(song_name)), 60
+                ),
                 ndigits=3,
             )
         else:
             name_match = round(
-                _match_percentage(unidecode(result["name"]), unidecode(song_title), 60),
+                _match_percentage(
+                    unidecode(result["name"]), str(unidecode(song_title)), 60
+                ),
                 ndigits=3,
             )
 
@@ -237,26 +233,25 @@ def _order_ytm_results(
         time_match = 100 - non_match_value
 
         if result["type"] == "song":
-            if album is not None:
+            if album is None:
                 # Don't add album_match to average_match if song_name == result and
                 # result album name != song_album_name
-                if (
-                    _match_percentage(album.lower(), result["name"].lower()) > 95
-                    and album.lower() != song_album_name.lower()
-                ):
-                    average_match = (artist_match + name_match + time_match) / 3
+                average_match = (artist_match + name_match + time_match) / 3
+            elif (
+                _match_percentage(album.lower(), result["name"].lower()) > 95
+                and album.lower() != song_album_name.lower()
+            ):
+                average_match = (artist_match + name_match + time_match) / 3
                 # Add album to average_match if song_name == result album
                 # and result album name == song_album_name
-                else:
-                    average_match = (
-                        artist_match + album_match + name_match + time_match
-                    ) / 4
             else:
-                average_match = (artist_match + name_match + time_match) / 3
-        # Don't add album_match to average_match if we don't have information about the album
-        # name in the metadata
+                average_match = (
+                    artist_match + album_match + name_match + time_match
+                ) / 4
         else:
             average_match = (artist_match + name_match + time_match) / 3
+        # Don't add album_match to average_match if we don't have information about the album
+        # name in the metadata
 
         # the results along with the avg Match
         links_with_match_value[result["link"]] = average_match

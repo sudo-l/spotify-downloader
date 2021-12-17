@@ -1,6 +1,8 @@
 from argparse import ArgumentParser, RawDescriptionHelpFormatter
 
-help_notice = r"""  # noqa: E501
+import pkg_resources
+
+help_notice = r"""
 To download a song run,
     spotdl [trackUrl]
     ex. spotdl https://open.spotify.com/track/0VjIjW4GlUZAMYd2vXMi3b
@@ -29,7 +31,11 @@ To change output format run:
     spotdl [songUrl] --output-format mp3/m4a/flac/opus/ogg/wav
     ex. spotdl [songUrl] --output-format opus
 
-To use ffmpeg binary that is not on PATH run:
+To specifiy path template run:
+    spotdl [songUrl] -p 'template'
+    ex. spotdl [songUrl] -p "{playlist}/{artists}/{album} - {title} {artist}.{ext}"
+
+To use FFmpeg binary that is not on PATH run:
     spotdl [songUrl] --ffmpeg path/to/your/ffmpeg.exe
     ex. spotdl [songUrl] --ffmpeg C:\ffmpeg\bin\ffmpeg.exe
 
@@ -37,7 +43,7 @@ To generate .m3u file for each playlist run:
     spotdl [playlistUrl] --m3u
     ex. spotdl https://open.spotify.com/playlist/37i9dQZF1E8UXBoz02kGID --m3u
 
-To use youtube instead of youtube music run:
+To use Youtube instead of YouTube Music run:
     spotdl [songUrl] --use-youtube
     ex. spotdl https://open.spotify.com/track/4fzsfWzRhPawzqhX8Qt9F3 --use-youtube
 
@@ -72,7 +78,7 @@ You can use the --debug-termination flag to figure out where in the code spotdl 
 
 spotDL downloads up to 4 songs in parallel, so for a faster experience,
 download albums and playlist, rather than tracks.
-"""
+"""  # noqa: E501
 
 
 def parse_arguments():
@@ -87,6 +93,10 @@ def parse_arguments():
     parser.add_argument(
         "query", type=str, nargs="+", help="URL/String for a song/album/playlist/artist"
     )
+
+    # Version
+    version = pkg_resources.require("spotdl")[0].version
+    parser.add_argument("--version", "-v", action="version", version=version)
 
     # Option to enable debug termination
     parser.add_argument("--debug-termination", action="store_true")
@@ -113,6 +123,24 @@ def parse_arguments():
         "--use-youtube", help="Use youtube instead of YTM", action="store_true"
     )
 
+    # Option to select a lyrics provider
+    parser.add_argument(
+        "--lyrics-provider",
+        help="Select a lyrics provider",
+        type=str,
+        choices=["genius", "musixmatch"],
+        default="musixmatch",
+    )
+
+    # Option to provide path template for downloaded files
+    parser.add_argument(
+        "-p",
+        "--path-template",
+        help="Path template for downloaded files",
+        type=str,
+        default=None,
+    )
+
     # Option to specify path to local ffmpeg
     parser.add_argument("-f", "--ffmpeg", help="Path to ffmpeg", dest="ffmpeg")
 
@@ -136,7 +164,7 @@ def parse_arguments():
         "--st",
         help="Number of threads used when searching for songs",
         type=int,
-        default=1,
+        default=4,
     )
 
     # Option to generate .m3u
@@ -144,14 +172,6 @@ def parse_arguments():
         "--generate-m3u",
         "--m3u",
         help="Generate .m3u file for each playlist",
-        action="store_true",
-    )
-
-    # Option to print ffmpeg version
-    parser.add_argument(
-        "-v",
-        "--version",
-        help="Show spotDL's version and exit",
         action="store_true",
     )
 
